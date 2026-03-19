@@ -1,0 +1,84 @@
+version: '3.9'
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: arth-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    networks:
+      - arth-net
+
+  mongo:
+    image: mongo:7
+    container_name: arth-mongo
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    environment:
+      MONGO_INITDB_DATABASE: arth
+    networks:
+      - arth-net
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: arth-backend
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    environment:
+      PORT: 5000
+      NODE_ENV: production
+      MONGODB_URI: mongodb://mongo:27017/arth
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: ${JWT_SECRET:-arth_super_secret_change_me}
+      FRONTEND_URL: http://localhost:3000
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      HF_TOKEN: ${HF_TOKEN:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+      OPENAI_EMBEDDING_MODEL: ${OPENAI_EMBEDDING_MODEL:-text-embedding-3-small}
+      RAG_USE_EMBEDDINGS: ${RAG_USE_EMBEDDINGS:-false}
+      RAG_TOP_K: ${RAG_TOP_K:-4}
+      HF_API_KEY: ${HF_API_KEY:-}
+      FINBERT_MODEL: ${FINBERT_MODEL:-ProsusAI/finbert}
+      RAPIDAPI_KEY: ${RAPIDAPI_KEY:-}
+      NEWS_API_KEY: ${NEWS_API_KEY:-}
+      FINNHUB_API_KEY: ${FINNHUB_API_KEY:-}
+      ALPHA_VANTAGE_API_KEY: ${ALPHA_VANTAGE_API_KEY:-}
+    depends_on:
+      - redis
+      - mongo
+    networks:
+      - arth-net
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        REACT_APP_API_URL: http://localhost:5000/api
+    container_name: arth-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    networks:
+      - arth-net
+
+volumes:
+  redis_data:
+  mongo_data:
+
+networks:
+  arth-net:
+    driver: bridge

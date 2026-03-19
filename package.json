@@ -1,0 +1,19 @@
+{
+  "name": "arth-workspace",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Workspace scripts for Arth frontend and backend",
+  "scripts": {
+    "dev": "concurrently -k -n backend,frontend -c green,blue \"npm --prefix backend run dev\" \"npm --prefix frontend run dev\"",
+    "dev:backend": "npm --prefix backend run dev",
+    "dev:frontend": "npm --prefix frontend run dev",
+    "build": "npm run build:frontend && npm run build:backend",
+    "build:frontend": "npm --prefix frontend run build",
+    "build:backend": "echo Backend has no compile build step (Node.js runtime service).",
+    "build:docker:frontend": "docker compose build frontend",
+    "build:docker:backend": "docker compose build backend"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}
