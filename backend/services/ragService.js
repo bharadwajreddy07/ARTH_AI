@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const { QdrantClient } = require('@qdrant/js-client-rest');
+const { request: pythonRagRequest } = require('./pythonRagClient');
 
 const OPENAI_EMBEDDING_MODEL = process.env.OPENAI_EMBEDDING_MODEL || 'text-embedding-3-small';
 const RAG_TOP_K = Math.max(2, Number(process.env.RAG_TOP_K) || 4);
@@ -486,6 +487,20 @@ const ingestRagDocuments = async (documents = [], options = {}) => {
   const batchChunks = normalizedBatch.flatMap((doc) =>
     chunkText(`ingested-${doc.source}`, doc.title, doc.content)
   );
+  try {
+    await pythonRagRequest('post', '/ingest', {
+      documents: normalizedBatch.map((doc) => ({
+        id: doc.id,
+        source: doc.source,
+        title: doc.title,
+        content: doc.content,
+        ingestedAt: doc.ingestedAt,
+        metadata: doc.metadata
+      }))
+    });
+  } catch (err) {
+    qdrantLastError = `Python RAG service unavailable: ${err.message}`;
+  }
   const vectorIndexed = await indexChunksToVectorStore(batchChunks);
 
   return {
@@ -543,6 +558,36 @@ const retrieveRagContext = async ({ query, runtimeContext = {}, client }) => {
   const corpus = buildCorpusChunks(runtimeContext);
   if (!corpus.length || !sanitizeText(query)) {
     return [];
+  }
+
+  try {
+    const pythonDocuments = corpus.map((chunk, index) => ({
+      id: `runtime-${buildStringHash(`${chunk.source}|${chunk.title}|${chunk.content}|${index}`)}`,
+      source: chunk.source,
+      title: chunk.title,
+      content: chunk.content,
+      publishedAt: chunk.publishedAt || null,
+      metadata: { runtime: isRuntimeSource(chunk.source) }
+    }));
+    await pythonRagRequest('post', '/ingest', { documents: pythonDocuments });
+
+    // Build search payload - include userId if available for personalized context
+    const searchPayload = { query, limit: RAG_TOP_K };
+    const userId = String(runtimeContext.userId || runtimeContext.user_id || '');
+    if (userId) searchPayload.userId = userId;
+
+    const pythonResults = await pythonRagRequest('post', '/search', searchPayload);
+    if (Array.isArray(pythonResults?.results) && pythonResults.results.length) {
+      return pythonResults.results.map((result) => ({
+        source: result.source,
+        title: result.title,
+        content: result.content,
+        publishedAt: result.publishedAt,
+        score: result.score
+      }));
+    }
+  } catch (err) {
+    qdrantLastError = `Python ChromaDB service unavailable: ${err.message}`;
   }
 
   const baseRank = corpus
@@ -615,15 +660,15 @@ const formatRagContext = (chunks) => {
   if (!Array.isArray(chunks) || !chunks.length) return '';
 
   return chunks
-    .map((chunk, index) => `[${index + 1}] (${chunk.source}) ${chunk.content}`)
+    .map((chunk, index) => `[${index + 1}] (${chunk.source}${chunk.publishedAt ? ` | published ${chunk.publishedAt}` : ''}) ${chunk.content}`)
     .join('\n');
 };
 
 const getRagStatus = () => ({
   enabled: true,
   topK: RAG_TOP_K,
-  useEmbeddings: RAG_USE_EMBEDDINGS,
-  embeddingModel: OPENAI_EMBEDDING_MODEL,
+  useEmbeddings: true,
+  embeddingModel: process.env.RAG_MODEL || 'sentence-transformers/all-MiniLM-L6-v2',
   staticDocuments: STATIC_RAG_DOCUMENTS.length,
   ingestedDocuments: INGESTED_DOCUMENTS.length,
   ingestedChunks: getIngestedChunks().length,
@@ -631,10 +676,11 @@ const getRagStatus = () => ({
   lastIngestionAt: LAST_INGESTION_AT,
   storageFile: RAG_STORAGE_FILE,
   vectorStore: {
-    provider: 'qdrant',
-    configured: Boolean(QDRANT_URL),
-    collection: QDRANT_URL ? QDRANT_COLLECTION : null,
-    dimension: VECTOR_DIMENSION,
+    provider: 'chromadb',
+    pythonService: process.env.RAG_PYTHON_URL || 'http://127.0.0.1:5100',
+    configured: true,
+    collections: ['rag_chunks', 'user_profiles', 'portfolio_data'],
+    chromaDbPath: process.env.CHROMA_DB_PATH || 'backend/data/chromadb',
     lastError: qdrantLastError
   }
 });

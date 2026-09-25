@@ -2,7 +2,33 @@ const express = require('express');
 const Portfolio = require('../models/Portfolio');
 const { getStockQuote, getHistoricalData } = require('../services/stockService');
 const auth = require('../middleware/auth');
+const { ingestPortfolio } = require('../services/pythonRagClient');
 const router = express.Router();
+
+/**
+ * Sync a portfolio snapshot to the ChromaDB portfolio_data collection.
+ * Fires-and-forgets so it never blocks the HTTP response.
+ */
+const syncPortfolioToChroma = (userId, portfolio) => {
+  const uid = String(userId || '');
+  if (!uid) return;
+  const payload = {
+    holdings: (portfolio.holdings || []).map((h) => ({
+      symbol: h.symbol,
+      name: h.name,
+      type: h.type,
+      quantity: h.quantity,
+      avgBuyPrice: h.avgBuyPrice,
+      currentPrice: h.currentPrice || h.avgBuyPrice,
+      purchaseDate: h.purchaseDate ? new Date(h.purchaseDate).toISOString() : '',
+    })),
+    totalInvested: portfolio.totalInvested || 0,
+    currentValue: portfolio.currentValue || 0,
+  };
+  ingestPortfolio(uid, payload).catch((err) =>
+    console.warn(`[ChromaDB] Failed to sync portfolio for ${uid}: ${err.message}`)
+  );
+};
 
 const toNumber = (value, fallback = 0) => {
   const parsed = Number(value);
@@ -103,6 +129,9 @@ router.get('/', auth, async (req, res) => {
     portfolio.updatedAt = new Date();
     await portfolio.save();
 
+    // Async: index the refreshed portfolio in ChromaDB
+    syncPortfolioToChroma(req.user._id, portfolio);
+
     res.json(portfolio);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -128,6 +157,10 @@ router.post('/holding', auth, async (req, res) => {
     }
 
     await portfolio.save();
+
+    // Async: update ChromaDB with the new holding
+    syncPortfolioToChroma(req.user._id, portfolio);
+
     res.json(portfolio);
   } catch (err) {
     res.status(400).json({ error: err.message });
@@ -140,8 +173,12 @@ router.delete('/holding/:symbol', auth, async (req, res) => {
     const portfolio = await Portfolio.findOne({ user: req.user._id });
     if (!portfolio) return res.status(404).json({ error: 'Portfolio not found' });
 
-    portfolio.holdings = portfolio.holdings.filter(h => h.symbol !== req.params.symbol);
+    portfolio.holdings = portfolio.holdings.filter((h) => h.symbol !== req.params.symbol);
     await portfolio.save();
+
+    // Async: update ChromaDB after removing the holding
+    syncPortfolioToChroma(req.user._id, portfolio);
+
     res.json(portfolio);
   } catch (err) {
     res.status(500).json({ error: err.message });

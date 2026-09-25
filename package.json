@@ -9,9 +9,7 @@
     "dev:frontend": "npm --prefix frontend run dev",
     "build": "npm run build:frontend && npm run build:backend",
     "build:frontend": "npm --prefix frontend run build",
-    "build:backend": "echo Backend has no compile build step (Node.js runtime service).",
-    "build:docker:frontend": "docker compose build frontend",
-    "build:docker:backend": "docker compose build backend"
+    "build:backend": "node --check backend/server.js && node --check backend/services/ragService.js && node --check backend/services/newsService.js"
   },
   "devDependencies": {
     "concurrently": "^9.1.2"

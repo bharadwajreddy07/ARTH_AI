@@ -2,6 +2,7 @@ const axios = require('axios');
 const cache = require('./cache');
 const { analyzeSentiment } = require('./sentimentService');
 const { getStockQuote } = require('./stockService');
+const { request: pythonRagRequest } = require('./pythonRagClient');
 
 const REQUEST_TIMEOUT = 12000;
 
@@ -303,6 +304,24 @@ const enrichWithSentiment = async (articles, category = 'general') => {
   })).then((items) => items.filter(Boolean));
 };
 
+const indexNewsInPythonRag = async (articles = []) => {
+  if (!articles.length) return;
+  try {
+    await pythonRagRequest('post', '/ingest', {
+      documents: articles.map((article) => ({
+        id: `news-${article.id}`,
+        source: `news-${article.source}`,
+        title: article.headline,
+        content: `${article.headline}. ${article.summary || ''}`,
+        publishedAt: article.datetime,
+        metadata: { category: article.category, url: article.url, sentiment: article.sentiment?.label || 'neutral' }
+      }))
+    });
+  } catch (err) {
+    console.warn(`News RAG indexing unavailable: ${err.message}`);
+  }
+};
+
 const fetchFinnhubMarketNews = async (category = 'general') => {
   const apiKey = getFinnhubApiKey();
   if (!apiKey) return [];
@@ -501,6 +520,7 @@ const getMarketNews = async (category = 'general') => {
   }
 
   const enriched = await enrichWithSentiment(curated, normalizedCategory);
+  await indexNewsInPythonRag(enriched);
   await cache.news.set(cacheKey, enriched);
   return enriched;
 };
@@ -527,6 +547,7 @@ const searchNews = async (query, category = 'india', limit = 12, options = {}) =
 
   const curated = sortAndCurate(filtered.length ? filtered : merged, normalizedCategory, limit, queryTokens);
   const enriched = curated.length ? await enrichWithSentiment(curated, normalizedCategory) : await getMockNews(normalizedQuery, normalizedCategory);
+  await indexNewsInPythonRag(enriched);
 
   if (!skipCache) {
     await cache.news.set(cacheKey, enriched);
@@ -594,6 +615,7 @@ const getStockNewsInternal = async (symbol, options = {}) => {
   }
 
   const enriched = await enrichWithSentiment(curated, 'india');
+  await indexNewsInPythonRag(enriched);
   if (!skipCache) {
     await cache.news.set(cacheKey, enriched);
   }
